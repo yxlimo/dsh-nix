@@ -1,0 +1,114 @@
+name: Update
+
+# Tracks the version dsh publishes to npm.
+#
+# dsh publishes a release candidate every few days and moves the `latest`
+# dist-tag, so there is no GitHub release event to listen for (and GitHub does
+# not deliver events from other repositories anyway). A daily poll of the npm
+# registry is the mechanism; `workflow_dispatch` is the manual entry point.
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to package (blank = newest published)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Configure git
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Resolve the target version
+        id: target
+        env:
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          current="$(grep -oP '(?<=^  version = ")[^"]+' packages/dsh.nix | head -1)"
+          if [ -n "${REQUESTED}" ]; then
+            want="${REQUESTED}"
+          else
+            want="$(
+              curl -fsSL https://registry.npmjs.org/@deepseek-ai%2Fdsh \
+                | python3 -c 'import json,sys; t=json.load(sys.stdin)["dist-tags"]; print(t.get("next") or t["latest"])'
+            )"
+          fi
+          echo "current=${current}" >> "$GITHUB_OUTPUT"
+          echo "want=${want}" >> "$GITHUB_OUTPUT"
+          echo "packaged: ${current} / published: ${want}"
+
+      - name: Regenerate the lockfile and the tarball hash
+        if: steps.target.outputs.want != steps.target.outputs.current
+        run: |
+          set -euo pipefail
+          want="${{ steps.target.outputs.want }}"
+          python3 scripts/gen-lock.py "$want"
+          sed -i "s|^  version = .*|  version = \"${want}\";|" packages/dsh.nix
+
+      # The hash is not something we can compute outside Nix: ask the builder by
+      # letting the fixed-output derivation fail once and reading the "got:" it
+      # prints. Cheaper and more trustworthy than hashing the tarball by hand,
+      # because it also proves the URL resolves.
+      - name: Recompute the tarball hash
+        if: steps.target.outputs.want != steps.target.outputs.current
+        run: |
+          set -euo pipefail
+          log="$(nix build --no-link .#dsh 2>&1 || true)"
+          got="$(sed -n 's/^ *got: *//p' <<<"$log" | head -1)"
+          if [ -z "$got" ]; then
+            # No hash mismatch: the version was already correct or the build
+            # failed for another reason. Fail loudly in the latter case.
+            nix build --no-link .#dsh
+            echo "nothing to recompute"
+          else
+            sed -i "s|^    hash = \"sha256-.*\";|    hash = \"${got}\";|" packages/dsh.nix
+            git --no-pager diff -- packages/dsh.nix
+          fi
+
+      - name: Build and smoke test
+        run: nix build --no-link --print-out-paths .#dsh
+
+      - name: Commit, tag and release
+        if: steps.target.outputs.want != steps.target.outputs.current
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          want="${{ steps.target.outputs.want }}"
+          if git diff --quiet; then
+            echo "no changes; nothing to publish"
+            exit 0
+          fi
+          git add -A
+          git commit -m "dsh: ${want}"
+          git tag -a "v${want}" -m "dsh ${want}"
+          git push origin HEAD --tags
+          gh release create "v${want}" --title "dsh ${want}" \
+            --notes "Packaged from \`@deepseek-ai/dsh@${want}\`." || true
