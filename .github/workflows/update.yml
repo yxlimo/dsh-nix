@@ -2,13 +2,14 @@ name: Update
 
 # Tracks the version dsh publishes to npm.
 #
-# dsh publishes a release candidate every few days and moves the `latest`
-# dist-tag, so there is no GitHub release event to listen for (and GitHub does
-# not deliver events from other repositories anyway). A daily poll of the npm
-# registry is the mechanism; `workflow_dispatch` is the manual entry point.
+# **No cron here.** The polling lives in one place — `gh-release-relay` on the
+# Oracle box, which checks every 15 minutes and POSTs a `repository_dispatch`
+# to whichever packaging repo is behind (`modules/lib/gh-release-relay-watch.nix`
+# in nix-config). One timer serves every packaging repo instead of each running
+# its own schedule, and the trigger is "upstream is newer", not "it is 04:17".
 on:
-  schedule:
-    - cron: "17 4 * * *"
+  repository_dispatch:
+    types: [ upstream-release ]
   workflow_dispatch:
     inputs:
       version:
@@ -49,11 +50,16 @@ jobs:
         id: target
         env:
           REQUESTED: ${{ inputs.version }}
+          # Set by the relay: the npm version it saw. Preferred over re-querying
+          # so the run packages exactly what triggered it.
+          DISPATCHED: ${{ github.event.client_payload.version }}
         run: |
           set -euo pipefail
           current="$(grep -oP '(?<=^  version = ")[^"]+' packages/dsh.nix | head -1)"
           if [ -n "${REQUESTED}" ]; then
             want="${REQUESTED}"
+          elif [ -n "${DISPATCHED:-}" ]; then
+            want="${DISPATCHED#v}"
           else
             want="$(
               curl -fsSL https://registry.npmjs.org/@deepseek-ai%2Fdsh \

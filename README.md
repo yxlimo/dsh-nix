@@ -73,10 +73,14 @@ authenticated launch URL.
 
 ## Keeping it current
 
-`.github/workflows/update.yml` runs daily (`cron`) and on demand. It reads
-npm's `latest` tag, and when it differs from the packaged version it
-regenerates the lockfile, recomputes the tarball hash, builds and smoke-tests,
-then commits and tags.
+There is **no cron in this repository**. The polling lives in one place:
+`gh-release-relay` on the Oracle box checks npm every 15 minutes and POSTs a
+`repository_dispatch` to whichever packaging repo is behind. One timer serves
+every packaging repo instead of each running its own schedule.
+
+The workflow then regenerates the lockfile, recomputes the tarball hash, builds
+and smoke-tests, and commits/tags. `workflow_dispatch` takes a version to force
+a specific one.
 
 Manual run:
 
