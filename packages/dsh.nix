@@ -43,13 +43,13 @@
 # site. The `installCheckPhase` boots a real profile, so drift is caught at
 # build time rather than at 3am on the NAS.
 let
-  version = "0.2.2-rc.4";
+  version = "0.2.2-rc.5";
 
   reg = lib.removeSuffix "/" registry;
 
   src = fetchurl {
     url = "${reg}/@deepseek-ai/dsh/-/dsh-${version}.tgz";
-    hash = "sha256-VUTz00MTHrFC95opw/R0xU+4qlXlOJr+iV0eHAlzCIQ=";
+    hash = "sha256-Z9paPEWPRs0njg7satDjpE6Z/RMIfG8RobNiJokApSw=";
   };
 
   # 依赖树来自 npm/package-lock.json（scripts/gen-lock.py 生成）。
